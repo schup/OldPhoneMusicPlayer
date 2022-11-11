@@ -14,10 +14,16 @@
  */
 package code.name.monkey.retromusic.activities
 
+import android.app.Activity
+import android.app.PendingIntent
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
+import android.nfc.NdefMessage
+import android.nfc.NfcAdapter
 import android.os.Bundle
 import android.provider.MediaStore
+import android.util.Log
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.contains
 import androidx.navigation.ui.setupWithNavController
@@ -27,6 +33,7 @@ import code.name.monkey.retromusic.extensions.*
 import code.name.monkey.retromusic.helper.MusicPlayerRemote
 import code.name.monkey.retromusic.helper.SearchQueryHelper.getSongs
 import code.name.monkey.retromusic.interfaces.IScrollHelper
+import code.name.monkey.retromusic.model.Album
 import code.name.monkey.retromusic.model.CategoryInfo
 import code.name.monkey.retromusic.model.Song
 import code.name.monkey.retromusic.repository.PlaylistSongsLoader
@@ -36,7 +43,9 @@ import code.name.monkey.retromusic.util.PreferenceUtil
 import code.name.monkey.retromusic.util.logE
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.koin.android.ext.android.get
+import java.nio.charset.StandardCharsets
 
 class MainActivity : AbsCastActivity() {
     companion object {
@@ -54,6 +63,29 @@ class MainActivity : AbsCastActivity() {
         setupNavigationController()
 
         WhatsNewFragment.showChangeLog(this)
+    }
+
+    override fun onStart() {
+        Log.i("main", "onStart MainActivity");
+        super.onStart()
+    }
+
+    override fun onStop() {
+        Log.i("main", "onStop MainActivity");
+        super.onStop()
+    }
+
+    override fun onResume() {
+        Log.i("main", "onResume MainActivity ${intent.action}");
+        super.onResume()
+        setupForegroundDispatch(this)
+        handleIntent(intent)
+    }
+
+    override fun onPause() {
+        Log.i("main", "onPause MainActivity");
+        super.onPause()
+        NfcAdapter.getDefaultAdapter(this)?.disableForegroundDispatch(this)
     }
 
     private fun setupNavigationController() {
@@ -121,6 +153,7 @@ class MainActivity : AbsCastActivity() {
         findNavController(R.id.fragment_container).navigateUp()
 
     override fun onNewIntent(intent: Intent?) {
+        Log.i("Main", "onNewIntent: $intent")
         super.onNewIntent(intent)
         val expand = intent?.extra<Boolean>(EXPAND_PANEL)?.value ?: false
         if (expand && PreferenceUtil.isExpandPanel) {
@@ -129,6 +162,55 @@ class MainActivity : AbsCastActivity() {
             expandPanel()
             intent?.removeExtra(EXPAND_PANEL)
         }
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent != null) {
+            if (NfcAdapter.ACTION_NDEF_DISCOVERED == intent.action) {
+                val ndefMessages = intent.getParcelableArrayExtra(NfcAdapter.EXTRA_NDEF_MESSAGES)
+                if (! ndefMessages.isNullOrEmpty()) {
+                    val records = (ndefMessages[0] as NdefMessage).records
+                    if (! records.isNullOrEmpty()) {
+                        val payload = records[0].payload
+                        val payloadString = payload.toString(StandardCharsets.UTF_8)
+                        val result = Regex("(\\d*):(.*)").find(payloadString)
+                        if (result != null) {
+                            val (id, title) = result.destructured
+                            var album:Album? = libraryViewModel.albumById(id.toLong())
+
+                            if (album?.songs?.size == 0) {
+                                album = runBlocking {
+                                    libraryViewModel.firstAlbumByPartialName(title)
+                                }
+                            }
+                            if (album != null && album.songs.isNotEmpty()) {
+                                Log.d("NFC", "found Album: $payloadString = ${album.id}:${album.title}")
+                                /*
+                                val intent = Intent()
+                                intent.type = MediaStore.Audio.Albums.CONTENT_TYPE
+                                intent.putExtra("albumId", album.id)
+                                startActivity(intent)
+                                 */
+                                val position = 0
+                                MusicPlayerRemote.openQueue(album.songs, position, true)
+                                expandPanel()
+                            } else {
+                                Log.e("NFC","No album / songs found for $payloadString")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onTopResumedActivityChanged(isTopResumedActivity: Boolean) {
+        super.onTopResumedActivityChanged(isTopResumedActivity)
+    }
+
+    override fun onResumeFragments() {
+        super.onResumeFragments()
     }
 
     override fun onServiceConnected() {
@@ -212,5 +294,24 @@ class MainActivity : AbsCastActivity() {
             }
         }
         return id
+    }
+
+    private fun setupForegroundDispatch(activity: Activity) {
+        val nfcAdapter = NfcAdapter.getDefaultAdapter(this)
+        if (nfcAdapter != null) {
+            val intent = Intent(
+                activity.applicationContext,
+                activity.javaClass
+            ).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            val pendingIntent = PendingIntent.getActivity(activity, 0, intent, 0)
+            val ndfFilter = IntentFilter(NfcAdapter.ACTION_NDEF_DISCOVERED)
+            ndfFilter.addDataType("audio/album")
+
+            nfcAdapter.enableForegroundDispatch(
+                activity,
+                pendingIntent, arrayOf(ndfFilter), arrayOf(arrayOf("android.nfc.tech.NfcF"))
+            )
+
+        }
     }
 }

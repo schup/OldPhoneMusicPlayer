@@ -204,6 +204,11 @@ class LibraryViewModel(
     }
 
     fun albumById(id: Long) = repository.albumById(id)
+
+    suspend fun firstAlbumByPartialName(name: String): Album? {
+         return repository.searchAlbums(name).firstOrNull()
+    }
+
     suspend fun artistById(id: Long) = repository.artistById(id)
     suspend fun favoritePlaylist() = repository.favoritePlaylist()
     suspend fun isFavoriteSong(song: SongEntity) = repository.isFavoriteSong(song)
